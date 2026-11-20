@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>운영자 · 캠페인 오픈 준비</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="app.css?v=20261120145403">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main" id="main"></main>
+</div>
+<script src="demo.js?v=20261120145403"></script>
+<script src="common.js?v=20261120145403"></script>
+<script>
+/* 운영자 화면. 광고주가 제출한 값을 서버에서 읽어 보여주고, 사람이 하는 일은 체크로 처리한다 */
+var S = {cases: [], c: null, d: {terms: {}, rq: {}}, e: {}, calc: null, busy: false, msg: '', seenSent: {}};
+function route() { var h = (location.hash || '#cases').slice(1).split('/'); return {page: h[0], id: h[1], tab: h[2] || 'status'}; }
+function copy(o) { return JSON.parse(JSON.stringify(o || {})); }
+function base() { return '/api/cases/' + S.c.id; }
+function step(k) { return S.c.checklist.filter(function (x) { return x.key === k; })[0]; }
+var CERT = [['name', '회사명'], ['ceo', '대표자'], ['biz_no', '사업자등록번호'], ['address', '사업장 주소'], ['biz_type', '업태'], ['biz_item', '종목']];
+
+/* 운영자가 아직 보지 않은 광고주 제출. 알림이 없는 대신 무엇이 새로 왔는지 보여준다 */
+var NEW_ON = {submitted: ['terms', 'contract', 'sealadv'], setup: ['test', 'creative']};
+function newCount(c, tab) { return c.unseen.filter(function (k) { return NEW_ON[tab].indexOf(k) >= 0; }).length; }
+function newTag(key) { return S.c.unseen.indexOf(key) >= 0 ? ' <span class="tag new">' + (S.c.unseen_changed.indexOf(key) >= 0 ? '수정됨' : '새로 제출됨') + '</span>' : ''; }
+/* 광고주의 수정 요청 (못 바꾸는 항목을 글로 요청한 것) */
+var RQ_LABEL = {terms: '협의 내용', seal: '날인본', tax_email: '세금계산서 수신 메일', contract: '계약 정보', test: '테스트 정보', creative: '광고 소재'};
+function openReqs(c) { return c.requests.filter(function (r) { return r.status === 'open'; }); }
+function requestsCard() {
+  var c = S.c, open = openReqs(c), closed = c.requests.filter(function (r) { return r.status !== 'open'; }), e = S.e.rq || {};
+  if (!c.requests.length) return '';
+  var h = '<div class="card"><h2>수정 요청' + (open.length ? ' <span class="tag new">' + open.length + '</span>' : '') + '</h2>';
+  h += open.map(function (r) {
+    var d = S.d.rq[r.id] || {};
+    return '<div class="rq"><p><b>' + RQ_LABEL[r.target] + '</b> <span class="h">' + esc(r.at) + '</span></p><p class="pre">' + esc(r.text) + '</p>' +
+      (r.target === 'tax_email' ? '<div class="f' + (e.value ? ' bad' : '') + '"><label>새 세금계산서 수신 메일<small>지금: ' + esc(c.contract.tax_email) + '</small></label><input data-p="rq" data-id="' + r.id + '" data-k="value" value="' + esc(d.value || '') + '" placeholder="tax@company.com">' + (e.value ? '<p class="e">' + esc(e.value.what) + ' ' + esc(e.value.how) + '</p>' : '') + '</div>' : '') +
+      '<div class="f' + (e.reply ? ' bad' : '') + '"><label>광고주에게 남길 말<small>선택 · 반영하지 않을 때는 이유를 적어 주세요</small></label><textarea data-p="rq" data-id="' + r.id + '" data-k="reply" style="min-height:60px">' + esc(d.reply || '') + '</textarea>' + (e.reply ? '<p class="e">' + esc(e.reply.what) + ' ' + esc(e.reply.how) + '</p>' : '') + '</div>' +
+      (r.target === 'terms' ? '<p class="h">아래 협의 내용의 "수정하기"로 먼저 고친 뒤, 반영 완료를 눌러 주세요. 고치면 신청서가 새로 만들어져요.</p>' : '') +
+      '<div class="actions">' + (r.target === 'tax_email' ? '<button class="pri sm" data-act="rq" data-do="apply" data-id="' + r.id + '">새 메일로 반영</button>'
+        : r.target === 'terms' ? '<button class="pri sm" data-act="rq" data-do="apply" data-id="' + r.id + '">반영 완료</button>'
+        : '<button class="pri sm" data-act="rq" data-do="unlock" data-id="' + r.id + '">다시 낼 수 있게 열기</button>') +
+      '<button class="sm" data-act="rq" data-do="reject" data-id="' + r.id + '">반영하지 않음</button></div></div>'; }).join('');
+  if (closed.length) h += '<ul class="log">' + closed.map(function (r) { return '<li><span class="tag ' + ((r.verdict || (r.result === '반영하지 않았어요' ? 'rejected' : 'approved')) === 'rejected' ? 'bad">반려' : 'done">승인') + '</span> ' + esc(r.done_at) + ' · ' + RQ_LABEL[r.target] + ' · ' + esc(r.result) + ' · 요청: ' + esc(r.text) + (r.reply ? ' · 답변: ' + esc(r.reply) : '') + '</li>'; }).join('') + '</ul>';
+  return h + errNote(e._form ? e : null) + '</div>';
+}
+function logCard() {
+  var c = S.c;
+  return c.log.length ? '<div class="card"><h2>변경 이력</h2><p class="h">누가 언제 무엇을 바꿨는지 남아요. 광고주가 제출한 뒤에 고친 것도 여기에 보여요.</p><ul class="log">' + c.log.slice().reverse().map(function (l) { return '<li>' + esc(l.at) + ' · ' + esc(l.by) + ' · ' + esc(l.text) + '</li>'; }).join('') + '</ul></div>' : '';
+}
+function side() {
+  var r = route(), c = S.c;
+  var tab = function (t, label, main) { var n = (NEW_ON[t] ? newCount(c, t) : 0) + (t === 'submitted' ? openReqs(c).length : 0); return '<a class="nav' + (r.page === 'case' && r.tab === t ? ' on' : '') + (main ? ' navmain' : '') + '" href="#case/' + c.id + '/' + t + '"><span>' + '' + label + '</span>' + (n ? '<span class="tag new">새 ' + n + '</span>' : '') + '</a>'; };
+  $('side').innerHTML = '<div class="brand">운영자</div><div class="who">' + (c ? esc(c.terms.app || '새 캠페인') + ' · <span class="mono">' + c.id + '</span>' : '캠페인 오픈 준비') + '</div>' +
+    '<a class="nav' + (r.page === 'cases' ? ' on' : '') + '" href="#cases"><span>캠페인 목록</span><span class="tag">' + S.cases.length + '</span></a>' +
+    (c ? '<div class="sep"></div>' + tab('status', '처리 현황', true) + '<div class="sep"></div>' + tab('submitted', '계약·서류') + tab('setup', '캠페인 세팅') : '') +
+    '<div class="demo">시연용 화면이에요. 로그인 없이 주소로만 구분해요.</div>';
+}
+
+/* ---------- 캠페인 목록 ---------- */
+function todo(c) {
+  var me = [], adv = [];
+  c.checklist.forEach(function (x) {
+    if (x.done || (x.key === 'later' && !c.later.length)) return;
+    if (x.who === 'operator') { if (x.ready) me.push(x.name); } else adv.push(x.name);
+  });
+  return {me: me, adv: adv};
+}
+function casesPage() {
+  var rows = S.cases.map(function (c) {
+    var t = c.terms, d = todo(c), opened = c.checklist[c.checklist.length - 1].done;
+    return '<tr><td><a href="#case/' + c.id + '/status"><b>' + esc(t.app || '(앱 이름 없음)') + '</b></a>' + (c.unseen.length ? ' <span class="tag new">새로 제출됨 ' + c.unseen.length + '</span>' : '') + (openReqs(c).length ? ' <span class="tag new">수정 요청 ' + openReqs(c).length + '</span>' : '') + '<br><span class="h">' + esc(t.company) + ' · <span class="mono">' + c.id + '</span></span></td>' +
+      '<td>' + (t.product || '-') + (c.amount.status === 'ok' ? ' · ' + fmt(c.amount.supply) + '원' : '') + '</td>' +
+      '<td>' + (opened ? '<span class="tag done">오픈 완료</span>' : d.me.length ? '<b style="color:var(--accent)">' + esc(d.me.join(', ')) + '</b>' : '없음') + '</td><td>' + (esc(d.adv.join(', ')) || '없음') + '</td>' +
+      '<td><a class="btn sm" href="advertiser.html?c=' + c.id + '" target="_blank" rel="noopener">광고주 화면 열기</a></td></tr>';
+  }).join('');
+  return '<div class="page wide"><h1>캠페인 목록</h1><p class="lead">광고주가 제출하면 이 목록에 반영돼요. 새 제출을 보려면 새로고침해 주세요.</p>' +
+    '<div class="card">' + (rows ? '<div style="overflow-x:auto"><table><tr><th>캠페인</th><th>상품 · 예산</th><th>지금 내가 할 일</th><th>광고주 대기</th><th></th></tr>' + rows + '</table></div>'
+      : '<p class="h">아직 캠페인이 없어요. 아래에서 캠페인을 만들어 보세요.</p>') + '</div>' +
+    '<div class="card"><h2>캠페인 만들기</h2><p class="h">협의가 끝난 캠페인을 만들어요. 예시는 가상 값으로 채워져 있고, 광고주가 확인한 뒤 확정해요.</p>' +
+    '<div class="actions"><button data-new="agency_cpi">예시: 대행사 · CPI</button><button data-new="direct_cpe">예시: 광고주 직접 · CPE</button><button data-new="direct_cpa">예시: 광고주 직접 · CPA</button><button data-new="demo_kakao">시연: 카카오톡 · CPI</button><button data-new="blank">빈 캠페인</button></div></div></div>';
+}
+
+/* ---------- 처리 현황 (체크리스트) ---------- */
+function row(x) {
+  var c = S.c, k = x.key, own = x.who === 'operator', box, sub = '', extra = '';
+  if (own && k !== 'sealops') box = '<input type="checkbox" data-ck="' + k + '"' + (x.done ? ' checked' : '') + (!x.done && !x.ready ? ' disabled' : '') + ' aria-label="' + esc(x.name) + ' 처리 완료">';
+  /* 체크 칸은 운영자가 누를 수 있는 일에만 붙인다. 광고주의 일은 끝나기 전까지 '대기'로 표시한다 */
+  /* 색은 누구의 일인지를 뜻한다: 운영자 = 파랑, 광고주 = 주황. 완료 칸의 체크도 한 사람의 색으로 칠한다 */
+  else box = x.done || own ? '<span class="cb' + (x.done ? ' on ' + (own ? 'ops' : 'adv') : '') + '">' + (x.done ? '✓' : '') + '</span>' : '<span class="tag adv">대기</span>';
+  if (k === 'approval' && c.seal_adv) extra = '<a class="btn sm" href="' + base() + '/files/' + c.seal_adv.file_id + '" target="_blank" rel="noopener">광고주 날인본 열기</a>';
+  if (k === 'approval' && !x.done) sub = '광고주 날인본으로 품의를 올려요';
+  if (k === 'sealops') { sub = x.done ? esc(c.seal_ops.name) + ' · 광고주에게 전달했어요' : '날인한 최종본을 올리면 광고주 화면으로 전달돼요'; if (x.ready) extra = '<input type="file" id="sealfinal" accept="application/pdf,image/png,image/jpeg,image/webp" aria-label="최종 날인본 올리기">'; }
+  if (k === 'invoice') { sub = c.contract ? esc(c.contract.tax_email) + ' 로 발행' : ''; var tax = c.docs.filter(function (d) { return d.kind === 'tax_invoice'; }).pop(); if (tax && !x.done && x.ready) extra = '<a class="btn sm" href="' + base() + '/docs/' + tax.id + '">세금계산서 발행 요청 파일 받기</a>'; }
+  if (k === 'paid') sub = x.note || '';
+  if (k === 'test' && c.test) sub = c.terms.product === 'CPI' ? '식별자로 세팅 후 리워드 지급 확인' : '테스트 서버 확인 후 상용 서버 재확인';
+  var rv = c.creative_review;
+  /* 소재에는 승인 단계가 없다. AI 검수 결과를 참고로 보여 주고, 문제가 있으면 운영자가 반려한다 */
+  if (k === 'setup' && c.creative) sub = c.creative.later_image ? '이미지가 오면 AI가 검수해요' : !rv ? 'AI 검수를 받지 않았거나 검수 뒤에 내용이 바뀐 소재예요. <a href="#case/' + c.id + '/setup">확인하기</a>'
+    : rv.failed ? 'AI 검수를 하지 못했어요. <a href="#case/' + c.id + '/setup">확인하기</a>' : rv.passed ? 'AI 검수 통과'
+    : '<span class="notyet">반려 대상 ' + rv.issues.length + '건</span> (금지 내용 또는 리워드 금액). <a href="#case/' + c.id + '/setup">확인하고 반려하기</a>';
+  if (k === 'setup' && c.creative_reject) sub = '<span class="tag bad">반려</span> 광고주가 고쳐서 다시 내기를 기다리고 있어요';
+  if (k === 'adminset' && !x.done) sub = '내부 어드민에 세팅한 뒤 체크하세요. ' + '<a href="#case/' + c.id + '/setup">캠페인 세팅 열기</a>';
+  if (k === 'report' && !x.done) sub = c.contract ? '광고주 구글 계정 ' + esc(c.contract.report_email) + ' 로 만들어 주세요' : '계약 정보가 제출되면 계정을 알 수 있어요';
+  if (k === 'report' && x.done) sub = esc(c.contract.report_email);
+  if (k === 'open' && x.done) { var shots = c.files.filter(function (f) { return f.kind === 'placement'; }); sub = '게재지면 캡처 ' + shots.length + '장 전달'; extra = '<input type="file" id="shot" accept="image/png,image/jpeg,image/webp" aria-label="게재지면 캡처 올리기">'; }
+  if (k === 'later') sub = esc(c.later.join(', ')) + ' 대기';
+  if (k === 'open' && !x.done) sub = x.ready ? '모든 조건이 갖춰졌어요' : '위 단계가 모두 끝나야 오픈할 수 있어요';
+  if (x.done && x.at) sub += (sub ? ' · ' : '') + esc(x.at);
+  return '<div class="it' + (!x.done && own && !x.ready ? ' pend' : '') + '" data-k="' + k + '">' + box + '<span><b style="font-weight:500">' + x.name + '</b>' + (sub ? '<small>' + sub + '</small>' : '') + extra + '</span></div>';
+}
+function statusPage() {
+  var c = S.c, list = c.checklist.filter(function (x) { return x.key !== 'later' || c.later.length; });
+  var mine = list.filter(function (x) { return !x.done && x.who === 'operator'; });
+  mine = mine.filter(function (x) { return x.ready; }).concat(mine.filter(function (x) { return !x.ready; }));
+  var adv = list.filter(function (x) { return !x.done && x.who === 'advertiser'; }), done = list.filter(function (x) { return x.done; });
+  var left = mine.length + adv.length;
+  var col = function (cls, title, items) { return '<div class="col ' + cls + '"><h2>' + title + ' ' + items.length + '건</h2>' + (items.map(row).join('') || '<p class="h">없어요</p>') + '</div>'; };
+  return '<div class="page wide"><h1>처리 현황</h1>' +
+    '<div class="sum"><span>' + (left ? '오픈 게이트 미통과 · 남은 단계<b>' + left + '건</b>' : '<b>오픈 완료</b>') + '</span>' +
+    (c.amount.status === 'ok' ? '<span>총 입금액<b>' + fmt(c.amount.deposit) + '원</b></span>' : '') + '</div>' + errNote(S.e.check) +
+    (openReqs(c).length ? '<div class="note warn"><p><b>광고주의 수정 요청이 ' + openReqs(c).length + '건 있어요.</b> <a href="#case/' + c.id + '/submitted">계약·서류에서 확인하기</a></p></div>' : '') +
+    '<div class="card"><p class="legend"><span><i class="ops"></i>내가(운영자) 하는 일</span><span><i class="adv"></i>광고주가 하는 일</span></p><div class="board">' +
+    col('ops', '운영자 할 일', mine) + col('adv', '광고주 대기', adv) + col('ok', '완료', done) + '</div></div>' +
+    logCard() +
+    '<div class="actions"><a class="btn sm" href="advertiser.html?c=' + c.id + '" target="_blank" rel="noopener">광고주 화면 열기</a><button class="sm" data-act="reload">새로고침</button></div></div>';
+}
+
+/* ---------- 계약·서류 ---------- */
+function submittedPage() {
+  var c = S.c, t = c.terms, a = c.amount, k = c.contract, ag = t.actor === 'agency';
+  var h = '<div class="page wide"><h1>계약·서류</h1><p class="lead">만든 시각 ' + esc(c.created_at) + ' · 협의 내용 ' + (c.confirmed ? '확정됨' : '확정 전') + '</p>';
+  h += requestsCard();
+  if (S.editTerms) h += termsEdit();
+  else h += '<div class="card"><h2>협의 내용' + newTag('terms') + '</h2>' + kv([ag ? ['대행사 / 광고주', esc(t.company) + ' / ' + esc(t.advertiser)] : ['광고주', esc(t.company)], ['앱', esc(t.app)],
+    a.status === 'ok' && ['상품 / 예산', t.product + ' / ' + fmt(a.supply) + '원 (약 ' + fmt(a.count) + '건)'], a.fee && ['대행 수수료', fmt(a.fee) + '원'],
+    a.status === 'ok' ? ['총 입금액 (VAT 포함)', '<b>' + fmt(a.deposit) + '원</b>'] : ['금액', esc(a.messages[0].what)]]) +
+    '<div class="actions"><button class="sm" data-act="edit-terms">수정하기</button><span class="h" role="status">' + (esc(S.msg) || (c.confirmed ? '광고주가 확정한 내용이에요. 지금은 운영자만 수정할 수 있어요.' : '아직 확정 전이라 광고주도 수정할 수 있어요.')) + '</span></div>' + termsLog() + '</div>';
+
+  h += '<div class="card"><h2>계약 정보' + newTag('contract') + '</h2>';
+  if (!k) h += '<p class="h">광고주가 아직 제출하지 않았어요.</p></div>';
+  else {
+    var p = k.applicant;
+    h += '<p class="h">제출 시각 ' + esc(k.submitted_at) + '</p>' + kv([['회사명', esc(p.name)], ['대표자', esc(p.ceo)], ['사업자등록번호', esc(p.biz_no)], ['업태 / 종목', esc(p.biz_type) + ' / ' + esc(p.biz_item)], ['사업장 주소', esc(p.address)],
+      ['담당자', esc(p.manager) + (p.dept ? ' · ' + esc(p.dept) : '') + ' · ' + esc(p.phone) + ' · ' + esc(p.email)], ['세금계산서 수신 메일', esc(k.tax_email)], ['리포트 확인용 구글 계정', esc(k.report_email)]]) + '</div>';
+
+    var docs = c.docs.slice(-2);
+    h += '<div class="card"><h2>만들어진 문서</h2>';
+    if (!docs.length) h += '<p class="h">협의 내용이 확정되면 만들어져요.</p>';
+    else h += '<p class="h">세금계산서 발행 요청 파일은 재무팀에 전달하는 용도예요. 광고주 화면에는 보이지 않아요.</p><p class="h">계약일 ' + esc(docs[0].contract_date) + ' · 계약금액 ' + fmt(docs[0].amounts.supply) + '원 · 수수료 ' + fmt(docs[0].amounts.fee) + '원 · 실입금액 ' + fmt(docs[0].amounts.deposit) + '원' +
+      (c.docs.length > 2 ? ' · ' + (c.docs.length / 2) + '번째로 만든 문서예요' : '') + '</p><div class="actions">' +
+      docs.map(function (d) { return '<a class="btn' + (d.kind === 'tax_invoice' ? ' pri' : '') + '" href="' + base() + '/docs/' + d.id + '">' + esc(d.name) + ' 받기</a>'; }).join('') + '</div>';
+    h += '</div>';
+
+    /* 날인본을 받아 → 내부 품의 → 운영사 날인 후 최종본 전달까지 한 카드에서 한다. 처리 현황의 같은 항목과 한 값이다 */
+    var seal = c.seal_adv, fin = c.seal_ops, ap = step('approval'), so = step('sealops');
+    h += '<div class="card"><h2>날인본' + newTag('sealadv') + '</h2>';
+    if (!seal) h += '<p class="h">광고주가 아직 날인본을 올리지 않았어요.</p>';
+    else h += '<div class="half">' +
+      '<div><h2 class="colh adv">① 광고주 날인본</h2><p class="h">받은 시각 ' + esc(seal.uploaded_at) + ' · 신청서 ' + esc(seal.doc_id) + '에 날인</p>' +
+        /* 올릴 때 AI가 본 결과. 최종 확인은 운영자가 날인본을 열어서 한다 */
+        (seal.ai_check ? '<p class="h"><span class="tag ai">AI</span> ' + (seal.ai_check.forced ? 'AI가 이상하다고 했지만 광고주가 그대로 제출했어요. 꼭 열어서 확인해 주세요.'
+          : '신청서 ' + (seal.ai_check.is_application ? '맞음' : '아님') + ' · 날인 ' + (seal.ai_check.has_seal ? '있음' : '없음') + (seal.ai_check.company_seen ? ' · 읽은 회사명: ' + esc(seal.ai_check.company_seen) : '')) + '</p>' : '') +
+        '<div class="actions" style="margin-top:8px"><a class="btn" href="' + base() + '/files/' + seal.file_id + '" target="_blank" rel="noopener">' + esc(seal.name) + ' 열기</a></div>' +
+        '<label class="later" style="margin-top:12px"><input type="checkbox" data-ck="approval"' + (ap.done ? ' checked' : '') + (ap.done || ap.ready ? '' : ' disabled') + '> 내부 품의를 올렸어요</label></div>' +
+      '<div><h2 class="colh ops">② 최종 날인본 전달</h2>' +
+        (fin ? '<p class="h">전달한 시각 ' + esc(fin.uploaded_at) + ' · 광고주 화면에 보여요</p>' +
+          (fin.ai_check ? '<p class="h"><span class="tag ai">AI</span> ' + (fin.ai_check.forced ? '운영자 확인 후 전달' : '양사 날인 확인') + '</p>' : '') + '<div class="actions" style="margin-top:8px"><a class="btn" href="' + base() + '/files/' + fin.file_id + '" target="_blank" rel="noopener">' + esc(fin.name) + ' 열기</a></div>'
+          : '<p class="h">운영사 날인까지 끝난 최종본을 올리면 광고주 화면으로 바로 전달돼요.</p>') +
+        (so.ready ? '<div class="drop' + (S.busy && S.finalFile ? ' busy' : '') + '" style="margin-top:8px"><input type="file" id="sealfinal" accept="application/pdf,image/png,image/jpeg,image/webp" aria-label="최종 날인본 올리기"' + (S.busy ? ' disabled' : '') + '><span class="h" role="status">' +
+          (S.busy && S.finalFile ? '<span class="spin" style="vertical-align:-2px;margin-right:6px"></span>' + esc(S.finalFile.name) + ' · AI가 양사 날인을 확인하고 있어요. 10초쯤 걸려요' : fin ? '다른 파일로 바꾸려면 다시 올려 주세요' : 'PDF, PNG, JPG') + '</span></div>' : '') +
+      '</div></div>' + errNote(S.e.check) +
+      (S.finalCheck && S.finalFile ? '<div class="actions"><button class="sm" data-act="force-final"' + (S.busy ? ' disabled' : '') + '>이대로 전달</button></div>' : '');
+    h += '</div>';
+    /* 처리 현황의 '세금계산서 발행', '입금 확인'과 한 값이다. 서류를 보는 화면에서 바로 체크할 수 있게 여기에도 둔다 */
+    var ck = function (k) { return S.c.checklist.filter(function (i) { return i.key === k; })[0] || {}; }, iv = ck('invoice'), pd = ck('paid');
+    var taxDoc = S.c.docs.filter(function (d) { return d.kind === 'tax_invoice'; }).pop();
+    var why = function (x, ok) { return x.done ? '완료 · ' + esc(x.at) : !x.ready ? '아직 남은 앞 단계: <b>' + esc((x.waiting || []).join(', ')) + '</b>' : ok; };
+    h += '<div class="card"><h2>세금계산서 · 입금</h2><div class="half">' +
+      '<div><h2 class="colh ops">③ 세금계산서 발행</h2><p class="h">' + (S.c.contract ? '받는 메일 ' + esc(S.c.contract.tax_email) : '계약 정보 제출 전') + '</p>' +
+        (taxDoc ? '<div class="actions" style="margin-top:8px"><a class="btn" href="' + base() + '/docs/' + taxDoc.id + '">발행 요청 파일 받기</a></div>' : '') +
+        '<label class="later" style="margin-top:12px"><input type="checkbox" data-ck="invoice"' + (iv.done ? ' checked' : '') + (iv.done || iv.ready ? '' : ' disabled') + '> 세금계산서를 발행했어요</label>' +
+        '<p class="h">' + why(iv, '재무팀이 발행한 뒤 체크해 주세요.') + '</p></div>' +
+      '<div><h2 class="colh ops">④ 입금 확인</h2><p class="h">' + esc(pd.note || '') + '</p>' +
+        '<label class="later" style="margin-top:12px"><input type="checkbox" data-ck="paid"' + (pd.done ? ' checked' : '') + (pd.done || pd.ready ? '' : ' disabled') + '> 입금을 확인했어요</label>' +
+        '<p class="h">' + why(pd, '입금이 들어온 것을 확인한 뒤 체크해 주세요.') + '</p></div>' +
+      '</div></div>';
+
+    var run = c.ai_runs.slice().reverse().find(function (r) { return r.confirmed; });
+    var files = c.files.filter(function (f) { return f.kind === 'biz_cert'; });
+    h += '<div class="card"><h2>사업자등록증과 AI 읽기 기록</h2>';
+    if (files.length) h += '<div class="actions">' + files.map(function (f) { return '<a class="btn sm" href="' + base() + '/files/' + f.id + '" target="_blank" rel="noopener">' + esc(f.name) + ' 보기</a>'; }).join('') + '</div>';
+    if (run) {
+      var edited = 0, rows = CERT.map(function (x) {
+        var same = (run.read[x[0]] || '') === (run.confirmed[x[0]] || ''); if (!same) edited++;
+        return '<tr><td>' + x[1] + '</td><td>' + esc(run.read[x[0]] || '(못 읽음)') + '</td><td>' + esc(run.confirmed[x[0]]) + '</td><td><span class="diff ' + (same ? 'same">일치' : 'edit">광고주가 수정') + '</span></td></tr>';
+      }).join('');
+      h += '<p class="h">' + esc(run.model) + ' · ' + run.seconds + '초 · 약 $' + run.cost_usd + ' · 6개 중 ' + (6 - edited) + '개를 그대로 사용</p><div style="overflow-x:auto"><table><tr><th>항목</th><th>AI가 읽은 값</th><th>광고주가 확정한 값</th><th></th></tr>' + rows + '</table></div>';
+    } else h += '<p class="h">광고주가 직접 입력했어요. AI가 읽은 기록이 없어요.</p>';
+    h += '</div>';
+  }
+
+
+  return h + '</div>';
+}
+
+/* 소재 반려: 사유를 적어 반려하면 광고주 화면에 보이고, 광고주가 고쳐서 다시 낸다 */
+function rejectBlock() {
+  var c = S.c, e = S.e.rej || {}, d = S.d.rej || {};
+  if (!c.creative) return '';
+  if (c.creative_reject) return '<div class="note warn"><p><span class="tag bad">반려</span> <b>반려한 소재예요.</b> ' + esc(c.creative_reject.at) + '</p><p class="pre">사유: ' + esc(c.creative_reject.reason) + '</p><p>광고주가 고쳐서 다시 제출하면 여기에 "수정됨"으로 표시돼요.</p></div>';
+  if (step('open').done) return '';
+  return '<div class="f' + (e.reason ? ' bad' : '') + '" style="margin-top:6px"><label>소재 반려<small>사유가 광고주 화면에 그대로 보여요</small></label>' +
+    '<textarea data-p="rej" data-k="reason" style="min-height:60px" placeholder="무엇을 고쳐야 하는지 적어 주세요. 예: 이미지에 리워드 금액이 있어요. 금액을 빼고 다시 올려 주세요.">' + esc(d.reason || '') + '</textarea>' +
+    (e.reason ? '<p class="e">' + esc(e.reason.what) + ' ' + esc(e.reason.how) + '</p>' : '') + errNote(e._form ? e : null) +
+    '<div class="actions"><button class="sm" data-act="reject-creative">이 소재 반려하기</button></div></div>';
+}
+/* AI 소재 검수 결과 (운영자용). 통과면 한 줄, 확인할 점이 있으면 목록 */
+var REVIEW_TARGET = {image: '이미지', name: '캠페인 이름', description: '소개 · 참여방법', caution: '유의사항'};
+function reviewBlock() {
+  var c = S.c, v = c.creative_review;
+  if (!c.creative) return '';
+  if (!v) return c.creative_flags.length ? '<div class="note warn"><p><b>검수할 때 확인해 주세요</b></p>' + c.creative_flags.map(function (f) { return '<p>' + esc(f) + '</p>'; }).join('') + '</div>' : '';
+  if (v.failed) return '<p class="h"><span class="tag ai">AI</span> 검수를 하지 못했어요 (' + esc(v.failed) + '). 처리 현황에서 직접 검수해 주세요.</p>';
+  var texts = v.image_texts.length ? '<p class="h">이미지에서 읽은 글자: ' + v.image_texts.map(esc).join(' / ') + '</p>' : '';
+  var line = function (i, tag) { return '<div class="idea"><span><b>' + tag + ' <span class="tag">' + REVIEW_TARGET[i.target] + '</span> ' + esc(i.what) + '</b><small>' + esc(i.why) + ' (' + esc(i.by) + ')</small>' + (i.example ? '<span class="eg">' + esc(i.example) + '</span>' : '') + '</span></div>'; };
+  /* 의견은 광고주에게 알려만 준 것이라 승인을 막지 않는다. 운영자는 참고로 본다 */
+  var ops = (v.opinions || []).map(function (i) { return line(i, '<span class="tag">의견</span>'); }).join('');
+  if (v.passed) return '<p class="h"><span class="tag ai">AI</span> <span class="tag done">검수 통과</span> ' + esc(v.at) + ' · 자동으로 승인됐어요</p>' + ops + texts;
+  return '<p class="h"><span class="tag ai">AI</span> <span class="tag bad">반려 대상 ' + v.issues.length + '건</span> ' + esc(v.at) + ' · 광고주에게도 같은 내용이 보여요</p>' +
+    v.issues.map(function (i) { return line(i, '<span class="tag bad">' + esc(i.level || '확인 필요') + '</span>'); }).join('') + ops + texts;
+}
+
+/* ---------- 캠페인 세팅 ---------- */
+/* 왼쪽은 광고주에게 받은 값, 오른쪽은 운영자가 정해 어드민에 넣는 값. 같은 값을 두 번 적지 않는다 */
+var NOTYET = '<span class="notyet">아직 제출 전</span>';
+/* 소재 이미지는 운영자가 가장 먼저 보는 것이라 표 위에 실제 그림으로 보여 준다. 누르면 원본이 열린다 */
+function creativeImage(c) {
+  var r = c.creative, file = c.files.filter(function (f) { return f.id === r.image_file_id; })[0];
+  if (r.later_image || !file) return '';
+  var url = base() + '/files/' + file.id;
+  return '<a href="' + url + '" target="_blank" rel="noopener" class="cimg"><img src="' + url + '" alt="소재 이미지 ' + esc(file.name) + '"></a>';
+}
+function setupPage() {
+  var c = S.c, d = S.d.setup, e = S.e.setup || {}, cr = c.creative || {};
+  var it = c.checklist.filter(function (i) { return i.key === 'adminset'; })[0] || {}, can = it.done || it.ready;
+  var rp = c.checklist.filter(function (i) { return i.key === 'report'; })[0] || {};
+  var ts = c.checklist.filter(function (i) { return i.key === 'test'; })[0] || {};
+  var basic = ['광고주', '대행사', '앱', '상품 / 단가', '광고비 / 물량', '노출 OS'];
+  var none = '<p class="h"><span class="notyet">광고주가 아직 제출하지 않았어요.</span></p>';
+  var left = '<div><h2 class="colh adv">광고주에게 받은 내역</h2>' +
+    '<div class="card"><h2>연동·테스트' + newTag('test') + '</h2>' + (c.test ? kv(testRows(c)) : none) +
+    /* 처리 현황의 '연동 테스트 통과'와 한 값이다. 받은 정보를 보면서 바로 체크할 수 있게 여기에도 둔다 */
+    '<label class="later"><input type="checkbox" data-ck="test"' + (ts.done ? ' checked' : '') + (ts.done || ts.ready ? '' : ' disabled') + '> 연동 테스트를 통과했어요</label>' +
+    '<p class="h">' + (ts.done ? '완료 · ' + esc(ts.at) : !ts.ready ? '아직 남은 앞 단계: <b>' + esc((ts.waiting || []).join(', ')) + '</b>. 끝나면 체크할 수 있어요.' : '직접 테스트한 뒤 체크해 주세요. 체크하면 광고주는 테스트 정보를 고칠 수 없어요.') + '</p></div>' +
+    '<div class="card"><h2>광고 소재' + newTag('creative') + '</h2>' + (c.creative ? creativeImage(c) + kv(creativeRows(c)) : none) +
+    reviewBlock() + rejectBlock() + '</div></div>';
+  var right = '<div><h2 class="colh ops">세팅 내역</h2>' +
+    '<div class="card"><h2>기본 정보</h2>' + kv(c.setup_rows.filter(function (r) { return basic.indexOf(r[0]) >= 0; }).map(function (r) { return [esc(r[0]), esc(r[1]) || '<span class="h">테스트 정보를 내면 정해져요</span>']; })) + '</div>' +
+    '<div class="card"><h2>운영자가 정하는 값</h2><p class="h">광고주가 낸 오픈 일정과 데일리캡이 기본값으로 들어 있어요. 바꿀 것이 있을 때만 고쳐서 저장하면 돼요. 세팅 완료를 체크하면 이 값이 광고주 화면에 안내돼요.</p><div class="grid2">' +
+    input('setup', {k: 'start_date', label: '시작일', type: 'date', hint: '광고주 오픈 일정 · ' + (cr.opendate ? esc(cr.opendate) : NOTYET)}, d.start_date, e) + input('setup', {k: 'end_date', label: '종료일', type: 'date', hint: '선택 · 비우면 소진 시까지'}, d.end_date, e) +
+    input('setup', {k: 'daily_cap', label: '데일리캡', span: true, hint: '광고주 입력 · ' + (!c.creative ? NOTYET : cr.daily_cap ? '하루 ' + fmt(cr.daily_cap) + '건' : '설정 안 함'), ph: '비우면 설정 안 함'}, d.daily_cap == null ? '' : d.daily_cap, e) +
+    input('setup', {k: 'memo', label: '운영 메모', hint: '선택 · 광고주에게 보여요', area: true, span: true, ph: '예: 유저 이해를 돕기 위해 캠페인명에 [앱 실행] 문구를 추가했습니다.'}, d.memo, e) + '</div>' + errNote(e) +
+    '<div class="actions"><button class="pri" data-act="save-setup"' + (S.busy ? ' disabled' : '') + '>저장</button><span class="h" role="status">' + (c.setup ? '저장됨 · ' + esc(c.setup.saved_at) : '아직 저장하지 않았어요') + '</span></div></div>' +
+    /* 처리 현황의 같은 항목과 한 값이다. 여기서 체크해도 처리 현황에 반영된다 */
+    '<div class="card"><h2>캠페인 세팅 완료</h2><label class="later"><input type="checkbox" data-ck="adminset"' + (it.done ? ' checked' : '') + (can ? '' : ' disabled') + '> 캠페인 세팅을 끝냈어요</label>' +
+    '<p class="h">' + (it.done ? '완료 · ' + esc(it.at) : !it.ready ? '아직 남은 앞 단계: <b>' + esc((it.waiting || []).join(', ')) + '</b>. 끝나면 체크할 수 있어요.' : c.setup ? '체크하면 광고주 화면에 세팅 내역이 안내돼요.' : '고칠 값이 없으면 저장하지 않고 바로 체크해도 돼요. 광고주가 낸 오픈 일정과 데일리캡 그대로 안내돼요.') + '</p></div>' +
+    /* 광고주가 낸 구글 계정을 여기서 바로 보고 리포트 계정을 만든다 */
+    '<div class="card"><h2>리포트 계정 생성 완료</h2>' + kv([['광고주 구글 계정', c.contract ? esc(c.contract.report_email) : '<span class="notyet">계약 정보 제출 전</span>'], ['리포트 어드민', esc(c.report_admin_url)]]) +
+    '<label class="later"><input type="checkbox" data-ck="report"' + (rp.done ? ' checked' : '') + (rp.done || rp.ready ? '' : ' disabled') + '> 리포트 계정을 만들었어요</label>' +
+    '<p class="h">' + (rp.done ? '완료 · ' + esc(rp.at) : !c.contract ? '광고주가 계약 정보를 내면 구글 계정을 알 수 있어요.' : '체크하면 광고주 화면에 리포트 주소와 로그인 계정이 안내돼요.') + '</p></div></div>';
+  return '<div class="page wide"><h1>캠페인 세팅</h1><p class="lead">논의한 내용대로 어드민에 셋팅해주세요. 왼쪽은 광고주에게 받은 값, 오른쪽은 운영자가 정하는 값이에요.</p>' +
+    '<div class="half">' + left + right + '</div></div>';
+}
+
+/* ---------- 협의 내용 수정 ---------- */
+function calcTable() { return '<table>' + amountRows(S.calc && S.calc.amount, S.calc && S.calc.fee_rate) + '</table>'; }
+function termsLog() {
+  var c = S.c;
+  return c.log.length ? '<h2 style="margin-top:16px">변경 이력</h2><ul class="log">' + c.log.map(function (l) { return '<li>' + esc(l.at) + ' · ' + esc(l.by) + ' · ' + esc(l.text) + '</li>'; }).join('') + '</ul>' : '';
+}
+/* 계약·서류의 협의 내용 카드가 '수정하기'를 누르면 이 입력칸으로 바뀐다 */
+function termsEdit() {
+  var c = S.c;
+  return '<div class="card"><h2>협의 내용 수정</h2>' +
+    (c.confirmed ? '<div class="note warn"><p><b>수정하면 변경 이력이 남아요.</b> 신청서가 새로 만들어지고, 날인본과 운영자 체크가 초기화돼요. 상품을 바꾸면 연동 정보도 다시 받아야 해요.</p></div>' : '') +
+    '<div class="grid2">' + termsFields(S.d.terms, S.e.terms, S.c.guide.compare) + '</div><h2 style="margin-top:16px">금액</h2><div id="tcalc">' + calcTable() + '</div>' + errNote(S.e.terms) +
+    '<div class="actions"><button class="pri" data-act="save-terms"' + (S.busy ? ' disabled' : '') + '>' + (c.confirmed ? '수정 저장' : '저장') + '</button><button data-act="cancel-terms">취소</button></div></div>';
+}
+
+function render() {
+  side();
+  var r = route();
+  $('main').innerHTML = r.page === 'case' && S.c ? (r.tab === 'submitted' ? submittedPage() : r.tab === 'setup' ? setupPage() : statusPage()) : casesPage();
+  /* 이번에 화면에 보여 준 '새로 제출됨'은 봤다고 남긴다. 표시는 이번엔 그대로 두고 다음에 열 때 사라진다 */
+  if (r.page === 'case' && S.c && NEW_ON[r.tab]) {
+    var keys = S.c.unseen.filter(function (k) { return NEW_ON[r.tab].indexOf(k) >= 0 && !S.seenSent[S.c.id + k]; });
+    keys.forEach(function (k) { S.seenSent[S.c.id + k] = true; });
+    if (keys.length) api(base() + '/seen', {keys: keys});
+  }
+}
+/* 알림이 없는 대신, 광고주가 바꾼 것이 있으면 새로고침을 권한다. 입력 중인 내용을 지우지 않으려고 자동으로 다시 그리지는 않는다 */
+setInterval(function () {
+  if (!S.c || document.hidden || S.busy || $('fresh-bar')) return;
+  api(base()).then(function (c) {
+    if (c && c.updated_at && c.updated_at !== S.c.updated_at)
+      document.body.insertAdjacentHTML('afterbegin', '<div class="freshbar" id="fresh-bar"><span>광고주가 새로 낸 것이 있어요.</span><button type="button" data-act="fresh">새로고침</button></div>');
+  });
+}, 15000);
+function load(keepDraft) {
+  var r = route();
+  return api('/api/cases').then(function (list) {
+    if (!Array.isArray(list)) { $('main').innerHTML = '<div class="page"><div class="note bad"><p>서버에 연결하지 못했어요. 서버가 켜져 있는지 확인해 주세요.</p></div></div>'; return; }
+    S.seenSent = {}; S.cases = list; S.c = r.page === 'case' ? (list.filter(function (c) { return c.id === r.id; })[0] || null) : null;
+    if (S.c && !keepDraft) { var cr = S.c.creative || {}; S.d.setup = S.c.setup ? copy(S.c.setup) : {start_date: cr.opendate || '', end_date: '', daily_cap: cr.daily_cap || '', memo: ''}; S.d.terms = copy(S.c.terms); S.calc = {amount: S.c.amount, fee_rate: S.c.fee_rate}; S.e = {}; S.msg = ''; S.editTerms = false; }
+    render();
+  });
+}
+/* 최종 날인본 올리기. AI가 양사 날인이 있는지 먼저 본다. 이상하면 이유를 보여 주고, 운영자가 맞다고 하면 force로 그대로 보낸다 */
+function sendFinal(force) {
+  S.busy = true; S.finalCheck = null; render();     /* 확인하는 동안 무엇을 하고 있는지 보여 준다 */
+  api(base() + '/seal', fileBody(S.finalFile, force ? {by: 'operator', force: '1'} : {by: 'operator'}), true).then(function (r) {
+    S.finalCheck = r.ok ? null : (r.seal_check || null); if (r.ok) S.finalFile = null;
+    adopt(r, 'check');
+  });
+}
+function adopt(r, key, msg) {
+  S.busy = false;
+  if (r.ok) { S.c = r.case; S.e[key] = {}; S.msg = msg || ''; if (key === 'terms') { S.editTerms = false; S.d.terms = copy(r.case.terms); S.calc = {amount: r.case.amount, fee_rate: r.case.fee_rate}; } }
+  else S.e[key] = r.errors || {};
+  render();
+}
+
+/* ---------- 동작 ---------- */
+var calcTimer;
+function recalc(full) {
+  api('/api/calc', S.d.terms).then(function (r) { if (!r.amount) return; S.calc = r; if (full) render(); else if ($('tcalc')) $('tcalc').innerHTML = calcTable(); });
+}
+document.addEventListener('input', function (ev) {
+  var t = ev.target;
+  if (t.dataset && t.dataset.p === 'setup') { S.d.setup[t.dataset.k] = t.value; return; }
+  if (t.dataset && t.dataset.p === 'rej') { (S.d.rej = S.d.rej || {})[t.dataset.k] = t.value; return; }
+  if (t.dataset && t.dataset.p === 'rq') { (S.d.rq[t.dataset.id] = S.d.rq[t.dataset.id] || {})[t.dataset.k] = t.value; return; }
+  if (!t.dataset || t.dataset.p !== 'terms' || t.type === 'radio') return;
+  S.d.terms[t.dataset.k] = t.value; clearTimeout(calcTimer); calcTimer = setTimeout(recalc, 300);
+});
+document.addEventListener('change', function (ev) {
+  var t = ev.target;
+  if (t.dataset && t.dataset.p === 'terms' && t.type === 'radio') { S.d.terms[t.dataset.k] = t.value; recalc(true); return; }
+  if (t.dataset && t.dataset.ck) {
+    if (!t.checked) {
+      var item = S.c.checklist.filter(function (x) { return x.key === t.dataset.ck; })[0];
+      if (!confirm("'" + (item ? item.name : '이 항목') + "' 체크를 풀까요?\n\n광고주 화면에서는 다시 '아직'으로 보여요. 광고주 화면이 바뀌지 않아 보인다면 그 화면을 새로고침해 보세요.")) { t.checked = true; return; }
+    }
+    api(base() + '/check', {key: t.dataset.ck, value: t.checked}).then(function (r) {
+      var was = {}; S.c.checklist.forEach(function (x) { was[x.key] = x; });
+      adopt(r, 'check');
+      /* 체크로 자리가 바뀐 항목과, 이제 할 수 있게 된 다음 항목을 잠깐 강조한다 */
+      if (r.ok) S.c.checklist.forEach(function (x) {
+        var el = (x.done !== was[x.key].done || (x.ready && !was[x.key].ready && !x.done)) && document.querySelector('.it[data-k="' + x.key + '"]');
+        if (el) el.classList.add('flash');
+      });
+    });
+    return;
+  }
+  if (t.id === 'shot' && t.files[0]) { api(base() + '/placement', fileBody(t.files[0]), true).then(function (r) { adopt(r, 'check'); }); return; }
+  if (t.id === 'sealfinal' && t.files[0]) { S.finalFile = t.files[0]; sendFinal(false); }
+});
+document.addEventListener('click', function (ev) {
+  var b = ev.target.closest('[data-new],[data-act]'); if (!b) return;
+  if (b.dataset.new) return api('/api/cases', {preset: b.dataset.new}).then(function () { load(); });
+  var act = b.dataset.act;
+  if (act === 'reload') load();
+  if (act === 'fresh') { $('fresh-bar').remove(); load(true); }
+  if (act === 'force-final' && S.finalFile) sendFinal(true);
+  if (act === 'reject-creative') { api(base() + '/creative-reject', S.d.rej || {}).then(function (r) { adopt(r, 'rej'); if (r.ok) S.d.rej = {}; }); }
+  if (act === 'rq') { var q = S.d.rq[b.dataset.id] || {}; api(base() + '/requests/' + b.dataset.id, {action: b.dataset.do, reply: q.reply, value: q.value}).then(function (r) { adopt(r, 'rq'); if (r.ok) delete S.d.rq[b.dataset.id]; }); }
+  if (act === 'save-setup') { S.busy = true; render(); api(base() + '/setup', S.d.setup).then(function (r) { adopt(r, 'setup'); if (r.ok) S.d.setup = copy(r.case.setup); }); }
+  if (act === 'edit-terms') { S.editTerms = true; S.msg = ''; render(); }
+  if (act === 'cancel-terms') { S.editTerms = false; S.e.terms = {}; S.d.terms = copy(S.c.terms); S.calc = {amount: S.c.amount, fee_rate: S.c.fee_rate}; render(); }
+  if (act === 'save-terms') { S.busy = true; render(); api(base() + '/terms', {terms: S.d.terms, by: 'operator'}).then(function (r) { adopt(r, 'terms', '저장했어요.'); }); }
+});
+window.addEventListener('hashchange', function () { load(); window.scrollTo(0, 0); });
+load();
+</script>
+</body>
+</html>
